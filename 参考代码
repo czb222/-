@@ -1,0 +1,102 @@
+import streamlit as st
+import akshare as ak
+import pandas as pd
+import plotly.graph_objects as go
+import time
+
+# --- 页面配置 ---
+st.set_page_config(page_title="金融龙虾量化终端", layout="wide", page_icon="🦞")
+
+# --- 侧边栏导航 ---
+st.sidebar.title("🦞 金融龙虾终端")
+page = st.sidebar.radio("导航", ["📊 大盘概览", "🔍 智能选股", "📈 个股分析"])
+
+# --- 缓存数据以提高速度 ---
+@st.cache_data(ttl=600) # 缓存10分钟
+def get_stock_list():
+    with st.spinner('正在从交易所拉取全量股票数据...'):
+        # 获取实时行情
+        df = ak.stock_zh_a_spot_em()
+        return df
+
+# --- 页面 1: 大盘概览 ---
+if page == "📊 大盘概览":
+    st.header("📊 全球及 A 股大盘指数")
+    
+    # 获取指数
+    index_df = ak.stock_zh_index_spot_em()
+    selected_indices = ["上证指数", "深证成指", "创业板指", "恒生指数", "纳斯达克"]
+    
+    cols = st.columns(5)
+    for i, index_name in enumerate(selected_indices):
+        row = index_df[index_df['名称'] == index_name]
+        if not row.empty:
+            price = row.iloc[0]['最新价']
+            change = row.iloc[0]['涨跌幅']
+            cols[i].metric(label=index_name, value=f"{price}", delta=f"{change}%")
+
+# --- 页面 2: 智能选股 ---
+elif page == "🔍 智能选股":
+    st.header("🔍 短线爆发力选股策略")
+    st.markdown("策略逻辑：涨幅 3%-9% + 量比 > 1.5 + 剔除 ST/科创板")
+    
+    if st.button("开始扫描市场"):
+        df = get_stock_list()
+        
+        # --- 核心筛选逻辑 ---
+        # 1. 剔除科创板 (688) 和 北交所 (8/4)
+        df = df[~df['代码'].str.startswith('688')]
+        df = df[~df['代码'].str.startswith(('8', '4'))]
+        # 2. 剔除 ST
+        df = df[~df['名称'].str.contains('ST')]
+        # 3. 涨幅限制 (3% < 涨跌幅 < 9.5%)
+        df = df[(df['涨跌幅'] > 3) & (df['涨跌幅'] < 9.5)]
+        # 4. 量比 > 1.5 (代表放量)
+        df = df[df['量比'] > 1.5]
+        
+        # 排序
+        df = df.sort_values(by="量比", ascending=False)
+        
+        # 展示结果
+        st.success(f"扫描完成！找到 {len(df)} 只潜力股")
+        
+        # 格式化显示
+        display_df = df[["代码", "名称", "最新价", "涨跌幅", "量比", "成交额"]]
+        st.dataframe(display_df, use_container_width=True)
+        
+        # 下载功能
+        csv = display_df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("下载选股结果 CSV", csv, "stocks.csv", "text/csv")
+
+# --- 页面 3: 个股分析 ---
+elif page == "📈 个股分析":
+    st.header("📈 个股技术面分析")
+    symbol = st.text_input("请输入股票代码 (例如 600519):", value="600519")
+    
+    if st.button("分析个股"):
+        with st.spinner(f"正在加载 {symbol} 的历史数据..."):
+            try:
+                # 获取历史K线
+                # 注意：akshare 的接口可能需要根据版本调整，这里使用通用接口
+                stock_zh_a_hist_df = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="qfq")
+                
+                if not stock_zh_a_hist_df.empty:
+                    # 数据清洗
+                    stock_zh_a_hist_df['日期'] = pd.to_datetime(stock_zh_a_hist_df['日期'])
+                    
+                    # 画图
+                    fig = go.Figure(data=[go.Candlestick(
+                        x=stock_zh_a_hist_df['日期'],
+                        open=stock_zh_a_hist_df['开盘'],
+                        high=stock_zh_a_hist_df['最高'],
+                        low=stock_zh_a_hist_df['最低'],
+                        close=stock_zh_a_hist_df['收盘'],
+                        name="K线"
+                    )])
+                    
+                    fig.update_layout(title=f"{symbol} 走势分析", xaxis_title="日期", yaxis_title="价格", xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.error("未找到数据，请检查代码是否正确")
+            except Exception as e:
+                st.error(f"发生错误: {e}")
